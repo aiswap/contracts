@@ -2018,7 +2018,8 @@ contract DeployRouter {
             WETH = AddressWETH.WETH();
         require(WETH != address(0), 'AiSwapFactoryFactory: WETH address is 0x0');
 
-        AiSwapRouter02 router = new AiSwapRouter02(address(factoryProxy), WETH);
+        AiSwapRouter02 router = new AiSwapRouter02();
+        router.initialize(address(factoryProxy), WETH);
         emit Deploy('AiSwapRouter02', address(router));
         
         InitializableAdminUpgradeabilityProxy routerProxy = new InitializableAdminUpgradeabilityProxy();
