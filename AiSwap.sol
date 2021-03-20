@@ -1885,8 +1885,9 @@ contract AiSwapRouter02 is IUniswapV2Router01, IUniswapV2Router02, Initializable
 library UniswapV2Library {
     using SafeMath for uint;
     //bytes32 private constant PairCodeHash = keccak256(type(InitializableProductProxy).creationCode);      // it will be changed when deploy because of Swarm bzzr
-    bytes32 private constant PairCodeHash = hex'9e3d176cd7b9504eb5f6b77283eeba7ad886f58601c2a02d5adcb699159904b4';
-    
+    //bytes32 private constant PairCodeHash = hex'9e3d176cd7b9504eb5f6b77283eeba7ad886f58601c2a02d5adcb699159904b4';
+    bytes32 private constant PairCodeHash = hex'71d15772a2b431bfcb85fd38973fe760b5765f961d5586544c62fabc8ba01d3c';
+
     function pairCodeHash() internal pure returns (bytes32) {
         return PairCodeHash;
     }
