@@ -1067,7 +1067,7 @@ contract Mine is Governable {
     }
     
     function approvePool(address pool, uint amount) public governance {
-        IERC20(reward).safeApprove(pool, amount);
+        IERC20(reward).approve(pool, amount);
     }
     
 }
