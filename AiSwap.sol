@@ -886,7 +886,7 @@ contract InitializableAdminUpgradeabilityProxy is BaseAdminUpgradeabilityProxy, 
    * https://solidity.readthedocs.io/en/v0.4.24/abi-spec.html#function-selector-and-argument-encoding.
    * This parameter is optional, if no data is given the initialization call to proxied contract will be skipped.
    */
-  function initialize(address _admin, address _logic, bytes memory _data) public payable {
+  function initialize(address _logic, address _admin, bytes memory _data) public payable {
     require(_implementation() == address(0));
     InitializableUpgradeabilityProxy.initialize(_logic, _data);
     assert(ADMIN_SLOT == bytes32(uint256(keccak256('eip1967.proxy.admin')) - 1));
@@ -1078,6 +1078,9 @@ contract ProxyFactory {
 */
 
 contract AiSwapFactory is IProxyFactory, IUniswapV2Factory {
+    using SafeMath for uint;
+    
+    bytes32 public constant pairCodeHash = keccak256(abi.encodePacked(type(InitializableProductProxy).creationCode));
     
     address public productImplementation;
     
@@ -1088,12 +1091,6 @@ contract AiSwapFactory is IProxyFactory, IUniswapV2Factory {
     address[] public allPairs;
 
     event PairCreated(address indexed token0, address indexed token1, address pair, uint);
-
-    constructor() public {
-        feeToSetter = msg.sender;
-        emit PairCodeHash(keccak256(type(InitializableProductProxy).creationCode));
-    }
-    event PairCodeHash(bytes32 pairCodeHash);
 
     function initialize(address _feeToSetter, address _productImplementation) public {
         require(feeToSetter== address(0) && _feeToSetter != address(0), 'AiSwapFactory.initialize can be delegatecall once by proxy only.');
@@ -1135,6 +1132,78 @@ contract AiSwapFactory is IProxyFactory, IUniswapV2Factory {
     function setProductImplementation(address _productImplementation) public {
         require(msg.sender == feeToSetter, 'UniswapV2: FORBIDDEN');
         productImplementation = _productImplementation;
+    }
+
+    // returns sorted token addresses, used to handle return values from pairs sorted in this order
+    function sortTokens(address tokenA, address tokenB) public pure returns (address token0, address token1) {
+        require(tokenA != tokenB, 'AiSwapFactory: IDENTICAL_ADDRESSES');
+        (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        require(token0 != address(0), 'AiSwapFactory: ZERO_ADDRESS');
+    }
+
+    // calculates the CREATE2 address for a pair without making any external calls
+    function pairFor(address tokenA, address tokenB) public view returns (address pair) {
+        (address token0, address token1) = sortTokens(tokenA, tokenB);
+        pair = address(uint(keccak256(abi.encodePacked(
+                hex'ff',
+                address(this),
+                keccak256(abi.encodePacked(token0, token1)),
+                pairCodeHash
+            ))));
+    }
+    // fetches and sorts the reserves for a pair
+    function getReserves(address tokenA, address tokenB) public view returns (uint reserveA, uint reserveB) {
+        (address token0,) = sortTokens(tokenA, tokenB);
+        (uint reserve0, uint reserve1,) = IUniswapV2Pair(pairFor(tokenA, tokenB)).getReserves();
+        (reserveA, reserveB) = tokenA == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
+    }
+
+    // given some amount of an asset and pair reserves, returns an equivalent amount of the other asset
+    function quote(uint amountA, uint reserveA, uint reserveB) public pure returns (uint amountB) {
+        require(amountA > 0, 'AiSwapFactory: INSUFFICIENT_AMOUNT');
+        require(reserveA > 0 && reserveB > 0, 'AiSwapFactory: INSUFFICIENT_LIQUIDITY');
+        amountB = amountA.mul(reserveB) / reserveA;
+    }
+
+    // given an input amount of an asset and pair reserves, returns the maximum output amount of the other asset
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) public pure returns (uint amountOut) {
+        require(amountIn > 0, 'AiSwapFactory: INSUFFICIENT_INPUT_AMOUNT');
+        require(reserveIn > 0 && reserveOut > 0, 'AiSwapFactory: INSUFFICIENT_LIQUIDITY');
+        uint amountInWithFee = amountIn.mul(997);
+        uint numerator = amountInWithFee.mul(reserveOut);
+        uint denominator = reserveIn.mul(1000).add(amountInWithFee);
+        amountOut = numerator / denominator;
+    }
+
+    // given an output amount of an asset and pair reserves, returns a required input amount of the other asset
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) public pure returns (uint amountIn) {
+        require(amountOut > 0, 'AiSwapFactory: INSUFFICIENT_OUTPUT_AMOUNT');
+        require(reserveIn > 0 && reserveOut > 0, 'AiSwapFactory: INSUFFICIENT_LIQUIDITY');
+        uint numerator = reserveIn.mul(amountOut).mul(1000);
+        uint denominator = reserveOut.sub(amountOut).mul(997);
+        amountIn = (numerator / denominator).add(1);
+    }
+
+    // performs chained getAmountOut calculations on any number of pairs
+    function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts) {
+        require(path.length >= 2, 'AiSwapFactory: INVALID_PATH');
+        amounts = new uint[](path.length);
+        amounts[0] = amountIn;
+        for (uint i; i < path.length - 1; i++) {
+            (uint reserveIn, uint reserveOut) = getReserves(path[i], path[i + 1]);
+            amounts[i + 1] = getAmountOut(amounts[i], reserveIn, reserveOut);
+        }
+    }
+
+    // performs chained getAmountIn calculations on any number of pairs
+    function getAmountsIn(uint amountOut, address[] memory path) public view returns (uint[] memory amounts) {
+        require(path.length >= 2, 'AiSwapFactory: INVALID_PATH');
+        amounts = new uint[](path.length);
+        amounts[amounts.length - 1] = amountOut;
+        for (uint i = path.length - 1; i > 0; i--) {
+            (uint reserveIn, uint reserveOut) = getReserves(path[i - 1], path[i]);
+            amounts[i - 1] = getAmountIn(amounts[i], reserveIn, reserveOut);
+        }
     }
 }
 
@@ -1884,9 +1953,9 @@ contract AiSwapRouter02 is IUniswapV2Router01, IUniswapV2Router02, Initializable
 
 library UniswapV2Library {
     using SafeMath for uint;
-    //bytes32 private constant PairCodeHash = keccak256(type(InitializableProductProxy).creationCode);      // it will be changed when deploy because of Swarm bzzr
+    bytes32 private constant PairCodeHash = keccak256(type(InitializableProductProxy).creationCode);      // it will be changed when deploy because of Swarm bzzr
     //bytes32 private constant PairCodeHash = hex'9e3d176cd7b9504eb5f6b77283eeba7ad886f58601c2a02d5adcb699159904b4';
-    bytes32 private constant PairCodeHash = hex'71d15772a2b431bfcb85fd38973fe760b5765f961d5586544c62fabc8ba01d3c';
+    //bytes32 private constant PairCodeHash = hex'71d15772a2b431bfcb85fd38973fe760b5765f961d5586544c62fabc8ba01d3c';
 
     function pairCodeHash() internal pure returns (bytes32) {
         return PairCodeHash;
@@ -2059,7 +2128,8 @@ library AddressWETH {
                 case  5  { addr := 0xB4FBF271143F4FBf7B91A5ded31805e42b2208d6 }      // Ethereum Testnet Gorli
                 case 42  { addr := 0xd0A1E359811322d97991E03f863a0C30C2cF029C }      // Ethereum Testnet Kovan
                 case 56  { addr := 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c }      // BSC Mainnet
-                case 65  { addr := 0x2219845942d28716c0f7c605765fabdca1a7d9e0 }      // okexchain-test
+                case 65  { addr := 0x2219845942d28716c0f7c605765fabdca1a7d9e0 }      // OKExChain Testnet
+                case 66  { addr := 0x8f8526dbfd6e38e3d8307702ca8469bae6c56c15 }      // OKExChain Main
                 case 128 { addr := 0x5545153ccfca01fbd7dd11c0b23ba694d9509a6f }      // HECO Mainnet 
                 case 256 { addr := 0xB49f19289857f4499781AaB9afd4A428C4BE9CA8 }      // HECO Testnet 
                 default  { addr := 0x0                                        }      // unknown 
