@@ -62,6 +62,9 @@ contract Initializable {
 
 
 contract Governable is Initializable {
+    // bytes32(uint256(keccak256('eip1967.proxy.admin')) - 1)
+    bytes32 internal constant ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+
     address public governor;
 
     event GovernorshipTransferred(address indexed previousGovernor, address indexed newGovernor);
@@ -70,13 +73,20 @@ contract Governable is Initializable {
      * @dev Contract initializer.
      * called once by the factory at time of deployment
      */
-    function initialize(address governor_) public initializer {     // virtual
+    function __Governable_init_unchained(address governor_) public initializer {
         governor = governor_;
         emit GovernorshipTransferred(address(0), governor);
     }
 
+    function _admin() internal view returns (address adm) {
+        bytes32 slot = ADMIN_SLOT;
+        assembly {
+            adm := sload(slot)
+        }
+    }
+    
     modifier governance() {
-        require(msg.sender == governor);
+        require(msg.sender == governor || msg.sender == _admin());
         _;
     }
 
@@ -118,10 +128,10 @@ contract Configurable is Governable {
     function getConfig(bytes32 key) public view returns (uint) {
         return config[key];
     }
-    function getConfig(bytes32 key, uint index) public view returns (uint) {
+    function getConfigI(bytes32 key, uint index) public view returns (uint) {
         return config[bytes32(uint(key) ^ index)];
     }
-    function getConfig(bytes32 key, address addr) public view returns (uint) {
+    function getConfigA(bytes32 key, address addr) public view returns (uint) {
         return config[bytes32(uint(key) ^ uint(addr))];
     }
 
@@ -129,20 +139,20 @@ contract Configurable is Governable {
         if(config[key] != value)
             config[key] = value;
     }
-    function _setConfig(bytes32 key, uint index, uint value) internal {
+    function _setConfigI(bytes32 key, uint index, uint value) internal {
         _setConfig(bytes32(uint(key) ^ index), value);
     }
-    function _setConfig(bytes32 key, address addr, uint value) internal {
+    function _setConfigA(bytes32 key, address addr, uint value) internal {
         _setConfig(bytes32(uint(key) ^ uint(addr)), value);
     }
     
     function setConfig(bytes32 key, uint value) external governance {
         _setConfig(key, value);
     }
-    function setConfig(bytes32 key, uint index, uint value) external governance {
+    function setConfigI(bytes32 key, uint index, uint value) external governance {
         _setConfig(bytes32(uint(key) ^ index), value);
     }
-    function setConfig(bytes32 key, address addr, uint value) public governance {
+    function setConfigA(bytes32 key, address addr, uint value) public governance {
         _setConfig(bytes32(uint(key) ^ uint(addr)), value);
     }
 }
@@ -449,8 +459,11 @@ contract AiSwapPair is IUniswapV2Pair, UniswapV2ERC20 {
                 uint rootK = Math.sqrt(uint(_reserve0).mul(_reserve1));
                 uint rootKLast = Math.sqrt(_kLast);
                 if (rootK > rootKLast) {
+                    //(, uint _taxRate) = AiSwapFactory(factory).getFeeRate(address(this));
                     uint numerator = totalSupply.mul(rootK.sub(rootKLast));
+                    //uint numerator = totalSupply.mul(rootK.sub(rootKLast)).mul(_taxRate);
                     uint denominator = rootK.mul(5).add(rootKLast);
+                    //uint denominator = rootK.mul(uint(1e18).sub(_taxRate)).add(rootKLast.mul(_taxRate));
                     uint liquidity = numerator / denominator;
                     if (liquidity > 0) _mint(feeTo, liquidity);
                 }
@@ -531,9 +544,13 @@ contract AiSwapPair is IUniswapV2Pair, UniswapV2ERC20 {
         uint amount1In = balance1 > _reserve1 - amount1Out ? balance1 - (_reserve1 - amount1Out) : 0;
         require(amount0In > 0 || amount1In > 0, 'UniswapV2: INSUFFICIENT_INPUT_AMOUNT');
         { // scope for reserve{0,1}Adjusted, avoids stack too deep errors
-        uint balance0Adjusted = balance0.mul(1000).sub(amount0In.mul(3));
-        uint balance1Adjusted = balance1.mul(1000).sub(amount1In.mul(3));
-        require(balance0Adjusted.mul(balance1Adjusted) >= uint(_reserve0).mul(_reserve1).mul(1000**2), 'UniswapV2: K');
+        (uint _feeRate, ) = AiSwapFactory(factory).getFeeRate(address(this));
+        //uint balance0Adjusted = balance0.mul(1000).sub(amount0In.mul(3));
+        uint balance0Adjusted = balance0.mul(1e18).sub(amount0In.mul(_feeRate));
+        //uint balance1Adjusted = balance1.mul(1000).sub(amount1In.mul(3));
+        uint balance1Adjusted = balance1.mul(1e18).sub(amount1In.mul(_feeRate));
+        //require(balance0Adjusted.mul(balance1Adjusted) >= uint(_reserve0).mul(_reserve1).mul(1000**2), 'UniswapV2: K');
+        require(balance0Adjusted.mul(balance1Adjusted) >= uint(_reserve0).mul(_reserve1).mul(1e36), 'UniswapV2: K');
         }
 
         _update(balance0, balance1, _reserve0, _reserve1);
@@ -552,6 +569,9 @@ contract AiSwapPair is IUniswapV2Pair, UniswapV2ERC20 {
     function sync() external lock {
         _update(IERC20(token0).balanceOf(address(this)), IERC20(token1).balanceOf(address(this)), reserve0, reserve1);
     }
+
+    // Reserved storage space to allow for layout changes in the future.
+    uint256[50] private ______gap;
 }
 
 
@@ -846,6 +866,173 @@ contract AdminUpgradeabilityProxy is BaseAdminUpgradeabilityProxy, Upgradeabilit
 
 
 /**
+ * @title BaseAdminUpgradeabilityProxy
+ * @dev This contract combines an upgradeability proxy with an authorization
+ * mechanism for administrative tasks.
+ * All external functions in this contract must be guarded by the
+ * `ifAdmin` modifier. See ethereum/solidity#3864 for a Solidity
+ * feature proposal that would enable this to be done automatically.
+ */
+contract __BaseAdminUpgradeabilityProxy__ is BaseUpgradeabilityProxy {
+  /**
+   * @dev Emitted when the administration has been transferred.
+   * @param previousAdmin Address of the previous admin.
+   * @param newAdmin Address of the new admin.
+   */
+  event AdminChanged(address previousAdmin, address newAdmin);
+
+  /**
+   * @dev Storage slot with the admin of the contract.
+   * This is the keccak-256 hash of "eip1967.proxy.admin" subtracted by 1, and is
+   * validated in the constructor.
+   */
+
+  bytes32 internal constant ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+
+  /**
+   * @dev Modifier to check whether the `msg.sender` is the admin.
+   * If it is, it will run the function. Otherwise, it will delegate the call
+   * to the implementation.
+   */
+  //modifier ifAdmin() {
+  //  if (msg.sender == _admin()) {
+  //    _;
+  //  } else {
+  //    _fallback();
+  //  }
+  //}
+  modifier ifAdmin() {
+    require (msg.sender == _admin(), 'only admin');
+      _;
+  }
+
+  /**
+   * @return The address of the proxy admin.
+   */
+  //function admin() external ifAdmin returns (address) {
+  //  return _admin();
+  //}
+  function __admin__() external view returns (address) {
+    return _admin();
+  }
+
+  /**
+   * @return The address of the implementation.
+   */
+  //function implementation() external ifAdmin returns (address) {
+  //  return _implementation();
+  //}
+  function __implementation__() external view returns (address) {
+    return _implementation();
+  }
+
+  /**
+   * @dev Changes the admin of the proxy.
+   * Only the current admin can call this function.
+   * @param newAdmin Address to transfer proxy administration to.
+   */
+  //function changeAdmin(address newAdmin) external ifAdmin {
+  //  require(newAdmin != address(0), "Cannot change the admin of a proxy to the zero address");
+  //  emit AdminChanged(_admin(), newAdmin);
+  //  _setAdmin(newAdmin);
+  //}
+  function __changeAdmin__(address newAdmin) external ifAdmin {
+    require(newAdmin != address(0), "Cannot change the admin of a proxy to the zero address");
+    emit AdminChanged(_admin(), newAdmin);
+    _setAdmin(newAdmin);
+  }
+
+  /**
+   * @dev Upgrade the backing implementation of the proxy.
+   * Only the admin can call this function.
+   * @param newImplementation Address of the new implementation.
+   */
+  //function upgradeTo(address newImplementation) external ifAdmin {
+  //  _upgradeTo(newImplementation);
+  //}
+  function __upgradeTo__(address newImplementation) external ifAdmin {
+    _upgradeTo(newImplementation);
+  }
+
+  /**
+   * @dev Upgrade the backing implementation of the proxy and call a function
+   * on the new implementation.
+   * This is useful to initialize the proxied contract.
+   * @param newImplementation Address of the new implementation.
+   * @param data Data to send as msg.data in the low level call.
+   * It should include the signature and the parameters of the function to be called, as described in
+   * https://solidity.readthedocs.io/en/v0.4.24/abi-spec.html#function-selector-and-argument-encoding.
+   */
+  //function upgradeToAndCall(address newImplementation, bytes calldata data) payable external ifAdmin {
+  //  _upgradeTo(newImplementation);
+  //  (bool success,) = newImplementation.delegatecall(data);
+  //  require(success);
+  //}
+  function __upgradeToAndCall__(address newImplementation, bytes calldata data) payable external ifAdmin {
+    _upgradeTo(newImplementation);
+    (bool success,) = newImplementation.delegatecall(data);
+    require(success);
+  }
+
+  /**
+   * @return adm The admin slot.
+   */
+  function _admin() internal view returns (address adm) {
+    bytes32 slot = ADMIN_SLOT;
+    assembly {
+      adm := sload(slot)
+    }
+  }
+
+  /**
+   * @dev Sets the address of the proxy admin.
+   * @param newAdmin Address of the new proxy admin.
+   */
+  function _setAdmin(address newAdmin) internal {
+    bytes32 slot = ADMIN_SLOT;
+
+    assembly {
+      sstore(slot, newAdmin)
+    }
+  }
+
+  /**
+   * @dev Only fall back when the sender is not the admin.
+   */
+  //function _willFallback() virtual override internal {
+  //  require(msg.sender != _admin(), "Cannot call fallback function from the proxy admin");
+  //  //super._willFallback();
+  //}
+}
+
+
+/**
+ * @title AdminUpgradeabilityProxy
+ * @dev Extends from BaseAdminUpgradeabilityProxy with a constructor for 
+ * initializing the implementation, admin, and init data.
+ */
+contract __AdminUpgradeabilityProxy__ is __BaseAdminUpgradeabilityProxy__, UpgradeabilityProxy {
+  /**
+   * Contract constructor.
+   * @param _logic address of the initial implementation.
+   * @param _admin Address of the proxy administrator.
+   * @param _data Data to send as msg.data to the implementation to initialize the proxied contract.
+   * It should include the signature and the parameters of the function to be called, as described in
+   * https://solidity.readthedocs.io/en/v0.4.24/abi-spec.html#function-selector-and-argument-encoding.
+   * This parameter is optional, if no data is given the initialization call to proxied contract will be skipped.
+   */
+  constructor(address _logic, address _admin, bytes memory _data) UpgradeabilityProxy(_logic, _data) public payable {
+    assert(ADMIN_SLOT == bytes32(uint256(keccak256('eip1967.proxy.admin')) - 1));
+    _setAdmin(_admin);
+  }
+  
+  //function _willFallback() override(Proxy, BaseAdminUpgradeabilityProxy) internal {
+  //  super._willFallback();
+  //}
+}
+
+
+/**
  * @title InitializableUpgradeabilityProxy
  * @dev Extends BaseUpgradeabilityProxy with an initializer for initializing
  * implementation and init data.
@@ -1089,6 +1276,9 @@ contract AiSwapFactory is IProxyFactory, IUniswapV2Factory {
 
     mapping(address => mapping(address => address)) public getPair;
     address[] public allPairs;
+    
+    mapping(address => uint) public feeRate;
+    mapping(address => uint) public taxRate;
 
     event PairCreated(address indexed token0, address indexed token1, address pair, uint);
 
@@ -1096,6 +1286,8 @@ contract AiSwapFactory is IProxyFactory, IUniswapV2Factory {
         require(feeToSetter== address(0) && _feeToSetter != address(0), 'AiSwapFactory.initialize can be delegatecall once by proxy only.');
         feeToSetter = _feeToSetter;
         productImplementation = _productImplementation;
+        feeRate[address(0)] = 0.003 ether;      // 0.3%
+        taxRate[address(0)] = 0.300 ether;      // 30%
     }
     
     function allPairsLength() external view returns (uint) {
@@ -1129,6 +1321,21 @@ contract AiSwapFactory is IProxyFactory, IUniswapV2Factory {
         feeToSetter = _feeToSetter;
     }
     
+    function setFeeRate(address pair, uint _feeRate, uint _taxRate) external {
+        require(msg.sender == feeToSetter, 'UniswapV2: FORBIDDEN');
+        feeRate[pair] = _feeRate;
+        taxRate[pair] = _taxRate;
+    }
+    
+    function getFeeRate(address pair) public view returns (uint _feeRate, uint _taxRate) {
+        _feeRate = feeRate[pair];
+        if(_feeRate == 0)
+            _feeRate= feeRate[address(0)];
+        _taxRate = taxRate[pair];
+        if(_taxRate == 0)
+            _taxRate = taxRate[address(0)];
+    }
+    
     function setProductImplementation(address _productImplementation) public {
         require(msg.sender == feeToSetter, 'UniswapV2: FORBIDDEN');
         productImplementation = _productImplementation;
@@ -1151,6 +1358,14 @@ contract AiSwapFactory is IProxyFactory, IUniswapV2Factory {
                 pairCodeHash
             ))));
     }
+
+    // return getPair if pair exist, or else return pairFor
+    function getPairFor(address tokenA, address tokenB) public view returns (address pair) {
+        pair = getPair[tokenA][tokenB];
+        if(pair == address(0))
+            pair = pairFor(tokenA, tokenB);
+    }
+    
     // fetches and sorts the reserves for a pair
     function getReserves(address tokenA, address tokenB) public view returns (uint reserveA, uint reserveB) {
         (address token0,) = sortTokens(tokenA, tokenB);
@@ -1166,22 +1381,34 @@ contract AiSwapFactory is IProxyFactory, IUniswapV2Factory {
     }
 
     // given an input amount of an asset and pair reserves, returns the maximum output amount of the other asset
-    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) public pure returns (uint amountOut) {
+    function getAmountOutPair(address pair, uint amountIn, uint reserveIn, uint reserveOut) public view returns (uint amountOut) {
         require(amountIn > 0, 'AiSwapFactory: INSUFFICIENT_INPUT_AMOUNT');
         require(reserveIn > 0 && reserveOut > 0, 'AiSwapFactory: INSUFFICIENT_LIQUIDITY');
-        uint amountInWithFee = amountIn.mul(997);
+        (uint _feeRate, ) = getFeeRate(pair);
+        //uint amountInWithFee = amountIn.mul(997);
+        uint amountInWithFee = amountIn.mul(uint(1e18).sub(_feeRate));
         uint numerator = amountInWithFee.mul(reserveOut);
-        uint denominator = reserveIn.mul(1000).add(amountInWithFee);
+        //uint denominator = reserveIn.mul(1000).add(amountInWithFee);
+        uint denominator = reserveIn.mul(1e18).add(amountInWithFee);
         amountOut = numerator / denominator;
+    }
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) public view returns (uint amountOut) {
+        return getAmountOutPair(address(0), amountIn, reserveIn, reserveOut);
     }
 
     // given an output amount of an asset and pair reserves, returns a required input amount of the other asset
-    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) public pure returns (uint amountIn) {
+    function getAmountInPair(address pair, uint amountOut, uint reserveIn, uint reserveOut) public view returns (uint amountIn) {
         require(amountOut > 0, 'AiSwapFactory: INSUFFICIENT_OUTPUT_AMOUNT');
         require(reserveIn > 0 && reserveOut > 0, 'AiSwapFactory: INSUFFICIENT_LIQUIDITY');
-        uint numerator = reserveIn.mul(amountOut).mul(1000);
-        uint denominator = reserveOut.sub(amountOut).mul(997);
+        (uint _feeRate, ) = getFeeRate(pair);
+        //uint numerator = reserveIn.mul(amountOut).mul(1000);
+        uint numerator = reserveIn.mul(amountOut).mul(1e18);
+        //uint denominator = reserveOut.sub(amountOut).mul(997);
+        uint denominator = reserveOut.sub(amountOut).mul(uint(1e18).sub(_feeRate));
         amountIn = (numerator / denominator).add(1);
+    }
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) public view returns (uint amountIn) {
+        return getAmountInPair(address(0), amountOut, reserveIn, reserveOut);
     }
 
     // performs chained getAmountOut calculations on any number of pairs
@@ -1205,6 +1432,9 @@ contract AiSwapFactory is IProxyFactory, IUniswapV2Factory {
             amounts[i - 1] = getAmountIn(amounts[i], reserveIn, reserveOut);
         }
     }
+
+    // Reserved storage space to allow for layout changes in the future.
+    uint256[48] private ______gap;
 }
 
 
@@ -1953,13 +2183,13 @@ contract AiSwapRouter02 is IUniswapV2Router01, IUniswapV2Router02, Initializable
 
 library UniswapV2Library {
     using SafeMath for uint;
-    bytes32 private constant PairCodeHash = keccak256(type(InitializableProductProxy).creationCode);      // it will be changed when deploy because of Swarm bzzr
+    //bytes32 private constant PairCodeHash = keccak256(type(InitializableProductProxy).creationCode);      // it will be changed when deploy because of Swarm bzzr
     //bytes32 private constant PairCodeHash = hex'9e3d176cd7b9504eb5f6b77283eeba7ad886f58601c2a02d5adcb699159904b4';
     //bytes32 private constant PairCodeHash = hex'71d15772a2b431bfcb85fd38973fe760b5765f961d5586544c62fabc8ba01d3c';
 
-    function pairCodeHash() internal pure returns (bytes32) {
-        return PairCodeHash;
-    }
+    //function pairCodeHash() internal pure returns (bytes32) {
+    //    return PairCodeHash;
+    //}
     
     // returns sorted token addresses, used to handle return values from pairs sorted in this order
     function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
@@ -1969,14 +2199,15 @@ library UniswapV2Library {
     }
 
     // calculates the CREATE2 address for a pair without making any external calls
-    function pairFor(address factory, address tokenA, address tokenB) internal pure returns (address pair) {
-        (address token0, address token1) = sortTokens(tokenA, tokenB);
-        pair = address(uint(keccak256(abi.encodePacked(
-                hex'ff',
-                factory,
-                keccak256(abi.encodePacked(token0, token1)),
-				PairCodeHash                                    //hex'96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f' // init code hash
-            ))));
+    function pairFor(address factory, address tokenA, address tokenB) internal view returns (address pair) {
+        //(address token0, address token1) = sortTokens(tokenA, tokenB);
+        //pair = address(uint(keccak256(abi.encodePacked(
+        //        hex'ff',
+        //        factory,
+        //        keccak256(abi.encodePacked(token0, token1)),
+		//		AiSwapFactory(factory).pairCodeHash                                    //hex'96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f' // init code hash
+        //    ))));
+        return AiSwapFactory(factory).getPairFor(tokenA, tokenB);
     }
 
     // fetches and sorts the reserves for a pair
@@ -2100,23 +2331,23 @@ contract DeployRouter {
     }
 }
 
-contract Test {
-    function pairFor(address factory, address tokenA, address tokenB) public pure returns (address) {
-        return UniswapV2Library.pairFor(factory, tokenA, tokenB);
-    }
-    
-    function pairCreationCode() public pure returns (bytes memory) {
-        return type(InitializableProductProxy).creationCode;
-    }
-    
-    function pairCodeHash() public pure returns (bytes32) {
-        return UniswapV2Library.pairCodeHash();
-    }
-    
-    function pairCodeHash2() public pure returns (bytes32) {
-        return keccak256(type(InitializableProductProxy).creationCode);
-    }
-}
+//contract Test {
+//    function pairFor(address factory, address tokenA, address tokenB) public pure returns (address) {
+//        return UniswapV2Library.pairFor(factory, tokenA, tokenB);
+//    }
+//    
+//    function pairCreationCode() public pure returns (bytes memory) {
+//        return type(InitializableProductProxy).creationCode;
+//    }
+//    
+//    function pairCodeHash() public pure returns (bytes32) {
+//        return UniswapV2Library.pairCodeHash();
+//    }
+//    
+//    function pairCodeHash2() public pure returns (bytes32) {
+//        return keccak256(type(InitializableProductProxy).creationCode);
+//    }
+//}
 
 library AddressWETH {
     function WETH() internal pure returns (address addr) {
