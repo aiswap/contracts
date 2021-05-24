@@ -847,6 +847,9 @@ library SafeERC20 {
 
 
 contract Governable is Initializable {
+    // bytes32(uint256(keccak256('eip1967.proxy.admin')) - 1)
+    bytes32 internal constant ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+
     address public governor;
 
     event GovernorshipTransferred(address indexed previousGovernor, address indexed newGovernor);
@@ -860,8 +863,15 @@ contract Governable is Initializable {
         emit GovernorshipTransferred(address(0), governor);
     }
 
+    function _admin() internal view returns (address adm) {
+        bytes32 slot = ADMIN_SLOT;
+        assembly {
+            adm := sload(slot)
+        }
+    }
+    
     modifier governance() {
-        require(msg.sender == governor);
+        require(msg.sender == governor || msg.sender == _admin());
         _;
     }
 
@@ -903,10 +913,10 @@ contract Configurable is Governable {
     function getConfig(bytes32 key) public view returns (uint) {
         return config[key];
     }
-    function getConfig(bytes32 key, uint index) public view returns (uint) {
+    function getConfigI(bytes32 key, uint index) public view returns (uint) {
         return config[bytes32(uint(key) ^ index)];
     }
-    function getConfig(bytes32 key, address addr) public view returns (uint) {
+    function getConfigA(bytes32 key, address addr) public view returns (uint) {
         return config[bytes32(uint(key) ^ uint(addr))];
     }
 
@@ -924,10 +934,10 @@ contract Configurable is Governable {
     function setConfig(bytes32 key, uint value) external governance {
         _setConfig(key, value);
     }
-    function setConfig(bytes32 key, uint index, uint value) external governance {
+    function setConfigI(bytes32 key, uint index, uint value) external governance {
         _setConfig(bytes32(uint(key) ^ index), value);
     }
-    function setConfig(bytes32 key, address addr, uint value) public governance {
+    function setConfigA(bytes32 key, address addr, uint value) public governance {
         _setConfig(bytes32(uint(key) ^ uint(addr)), value);
     }
 }
