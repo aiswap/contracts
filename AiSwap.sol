@@ -459,11 +459,11 @@ contract AiSwapPair is IUniswapV2Pair, UniswapV2ERC20 {
                 uint rootK = Math.sqrt(uint(_reserve0).mul(_reserve1));
                 uint rootKLast = Math.sqrt(_kLast);
                 if (rootK > rootKLast) {
-                    //(, uint _taxRate) = AiSwapFactory(factory).getFeeRate(address(this));
-                    uint numerator = totalSupply.mul(rootK.sub(rootKLast));
-                    //uint numerator = totalSupply.mul(rootK.sub(rootKLast)).mul(_taxRate);
-                    uint denominator = rootK.mul(5).add(rootKLast);
-                    //uint denominator = rootK.mul(uint(1e18).sub(_taxRate)).add(rootKLast.mul(_taxRate));
+                    (, uint _taxRate) = AiSwapFactory(factory).getFeeRate(address(this));
+                    //uint numerator = totalSupply.mul(rootK.sub(rootKLast));
+                    uint numerator = totalSupply.mul(rootK.sub(rootKLast)).mul(_taxRate);
+                    //uint denominator = rootK.mul(5).add(rootKLast);
+                    uint denominator = rootK.mul(uint(1e18).sub(_taxRate)).add(rootKLast);
                     uint liquidity = numerator / denominator;
                     if (liquidity > 0) _mint(feeTo, liquidity);
                 }
