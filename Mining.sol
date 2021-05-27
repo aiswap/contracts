@@ -1713,7 +1713,28 @@ interface IWETH is IERC20 {
 }
 
 contract EthPool is StakingPool {
+    bytes32 internal constant _WETH_			= 'WETH';
+
+    function __EthPool_init(address _governor, 
+        address _rewardsDistribution,
+        address _rewardsToken,
+        address _stakingToken,
+        address _ecoAddr,
+		address _WETH
+    ) public virtual initializer {
+	    __ReentrancyGuard_init_unchained();
+	    __Governable_init_unchained(_governor);
+        //__StakingRewards_init_unchained(_rewardsDistribution, _rewardsToken, _stakingToken);
+        __StakingPool_init_unchained(_rewardsDistribution, _rewardsToken, _stakingToken, _ecoAddr);
+		__EthPool_init_unchained(_WETH);
+    }
+
+    function __EthPool_init_unchained(address _WETH) public virtual governance {
+        config[_WETH_] = uint(_WETH);
+    }
+
     function stakeEth() virtual public payable nonReentrant updateReward(msg.sender) {
+        require(address(stakingToken) == address(config[_WETH_]), 'stakingToken is not WETH');
         uint amount = msg.value;
         require(amount > 0, "Cannot stake 0");
         _totalSupply = _totalSupply.add(amount);
@@ -1723,6 +1744,7 @@ contract EthPool is StakingPool {
     }
 
     function withdrawEth(uint256 amount) virtual public nonReentrant updateReward(msg.sender) {
+        require(address(stakingToken) == address(config[_WETH_]), 'stakingToken is not WETH');
         require(amount > 0, "Cannot withdraw 0");
         _totalSupply = _totalSupply.sub(amount);
         _balances[msg.sender] = _balances[msg.sender].sub(amount);
@@ -1737,7 +1759,7 @@ contract EthPool is StakingPool {
     }
     
     receive () payable external {
-        
+        stakeEth();
     }
 
     // Reserved storage space to allow for layout changes in the future.
